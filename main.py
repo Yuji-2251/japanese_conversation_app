@@ -18,7 +18,6 @@ from dotenv import load_dotenv
 import functions as ft
 import constants as ct
 
-
 # 各種設定
 load_dotenv()
 st.set_page_config(
@@ -27,6 +26,10 @@ st.set_page_config(
 
 # タイトル表示
 st.markdown(f"## {ct.APP_NAME}")
+
+# 必要なディレクトリを作成
+ft.ensure_directory_exists(ct.AUDIO_INPUT_DIR)
+ft.ensure_directory_exists(ct.AUDIO_OUTPUT_DIR)
 
 # 初期処理
 if "messages" not in st.session_state:
@@ -48,20 +51,23 @@ if "messages" not in st.session_state:
     st.session_state.chat_open_flg = False
     st.session_state.problem = ""
     
-    st.session_state.openai_obj = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    st.session_state.llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.5)
-    st.session_state.memory = ConversationSummaryBufferMemory(
-        llm=st.session_state.llm,
-        max_token_limit=1000,
-        return_messages=True
-    )
-
-    # モード「日常英会話」用のChain作成
-    st.session_state.chain_basic_conversation = ft.create_chain(ct.SYSTEM_TEMPLATE_BASIC_CONVERSATION)
+    try:
+        st.session_state.openai_obj = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        st.session_state.llm = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.5)
+        st.session_state.memory = ConversationSummaryBufferMemory(
+            llm=st.session_state.llm,
+            max_token_limit=1000,
+            return_messages=True
+        )
+        
+        # モード「日常英会話」用のChain作成
+        st.session_state.chain_basic_conversation = ft.create_chain(ct.SYSTEM_TEMPLATE_BASIC_CONVERSATION)
+    except Exception as e:
+        st.error(f"初期化に失敗しました: {e}")
+        st.error("OpenAI APIキーが設定されているか確認してください。")
+        st.stop()
 
 # 初期表示
-# col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
-# 提出課題用
 col1, col2, col3, col4 = st.columns([2, 2, 3, 3])
 with col1:
     if st.session_state.start_flg:
@@ -81,13 +87,17 @@ with col3:
             st.session_state.dictation_flg = False
             st.session_state.shadowing_flg = False
         # 「シャドーイング」選択時の初期化処理
-        st.session_state.shadowing_count = 0
-        if st.session_state.mode == ct.MODE_2:
+        elif st.session_state.mode == ct.MODE_2:
+            st.session_state.shadowing_count = 0
             st.session_state.dictation_flg = False
+            st.session_state.shadowing_first_flg = True
+            st.session_state.shadowing_evaluation_first_flg = True
         # 「ディクテーション」選択時の初期化処理
-        st.session_state.dictation_count = 0
-        if st.session_state.mode == ct.MODE_3:
+        elif st.session_state.mode == ct.MODE_3:
+            st.session_state.dictation_count = 0
             st.session_state.shadowing_flg = False
+            st.session_state.dictation_first_flg = True
+            st.session_state.dictation_evaluation_first_flg = True
         # チャット入力欄を非表示にする
         st.session_state.chat_open_flg = False
     st.session_state.pre_mode = st.session_state.mode
@@ -98,7 +108,7 @@ with st.chat_message("assistant", avatar="images/ai_icon.jpg"):
     st.markdown("こちらは生成AIによる音声英会話の練習アプリです。何度も繰り返し練習し、英語力をアップさせましょう。")
     st.markdown("**【操作説明】**")
     st.success("""
-    - モードと再生速度を選択し、「英会話開始」ボタンを押して英会話を始めましょう。
+    - モードと再生速度を選択し、「開始」ボタンを押して英会話を始めましょう。
     - モードは「日常英会話」「シャドーイング」「ディクテーション」から選べます。
     - 発話後、5秒間沈黙することで音声入力が完了します。
     - 「一時中断」ボタンを押すことで、英会話を一時中断できます。
@@ -131,15 +141,15 @@ st.session_state.dictation_chat_message = st.chat_input("※「ディクテー�
 if st.session_state.dictation_chat_message and not st.session_state.chat_open_flg:
     st.stop()
 
-# 「英会話開始」ボタンが押された場合の処理
+# 「開始」ボタンが押された場合の処理
 if st.session_state.start_flg:
 
     # モード：「ディクテーション」
-    # 「ディクテーション」ボタン押下時か、「英会話開始」ボタン押下時か、チャット送信時
     if st.session_state.mode == ct.MODE_3 and (st.session_state.dictation_button_flg or st.session_state.dictation_count == 0 or st.session_state.dictation_chat_message):
         if st.session_state.dictation_first_flg:
             st.session_state.chain_create_problem = ft.create_chain(ct.SYSTEM_TEMPLATE_CREATE_PROBLEM)
             st.session_state.dictation_first_flg = False
+        
         # チャット入力以外
         if not st.session_state.chat_open_flg:
             with st.spinner('問題文生成中...'):
@@ -165,11 +175,13 @@ if st.session_state.start_flg:
             st.session_state.messages.append({"role": "user", "content": st.session_state.dictation_chat_message})
             
             with st.spinner('評価結果の生成中...'):
-                system_template = ct.SYSTEM_TEMPLATE_EVALUATION.format(
-                    llm_text=st.session_state.problem,
-                    user_text=st.session_state.dictation_chat_message
-                )
-                st.session_state.chain_evaluation = ft.create_chain(system_template)
+                if st.session_state.dictation_evaluation_first_flg:
+                    system_template = ct.SYSTEM_TEMPLATE_EVALUATION.format(
+                        llm_text=st.session_state.problem,
+                        user_text=st.session_state.dictation_chat_message
+                    )
+                    st.session_state.chain_evaluation = ft.create_chain(system_template)
+                    st.session_state.dictation_evaluation_first_flg = False
                 # 問題文と回答を比較し、評価結果の生成を指示するプロンプトを作成
                 llm_response_evaluation = ft.create_evaluation()
             
@@ -187,9 +199,8 @@ if st.session_state.start_flg:
 
             st.rerun()
 
-    
     # モード：「日常英会話」
-    if st.session_state.mode == ct.MODE_1:
+    elif st.session_state.mode == ct.MODE_1:
         # 音声入力を受け取って音声ファイルを作成
         audio_input_file_path = f"{ct.AUDIO_INPUT_DIR}/audio_input_{int(time.time())}.wav"
         ft.record_audio(audio_input_file_path)
@@ -229,10 +240,8 @@ if st.session_state.start_flg:
         st.session_state.messages.append({"role": "user", "content": audio_input_text})
         st.session_state.messages.append({"role": "assistant", "content": llm_response})
 
-
     # モード：「シャドーイング」
-    # 「シャドーイング」ボタン押下時か、「英会話開始」ボタン押下時
-    if st.session_state.mode == ct.MODE_2 and (st.session_state.shadowing_button_flg or st.session_state.shadowing_count == 0 or st.session_state.shadowing_audio_input_flg):
+    elif st.session_state.mode == ct.MODE_2 and (st.session_state.shadowing_button_flg or st.session_state.shadowing_count == 0 or st.session_state.shadowing_audio_input_flg):
         if st.session_state.shadowing_first_flg:
             st.session_state.chain_create_problem = ft.create_chain(ct.SYSTEM_TEMPLATE_CREATE_PROBLEM)
             st.session_state.shadowing_first_flg = False
@@ -285,3 +294,4 @@ if st.session_state.start_flg:
 
         # 「シャドーイング」ボタンを表示するために再描画
         st.rerun()
+        
